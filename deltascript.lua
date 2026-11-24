@@ -36,7 +36,7 @@ local EmoteFlingConfig = {
     QuickFireKey = Enum.KeyCode.T,
     NotificationsEnabled = true,
     FloatingButtonsEnabled = true,
-    FloatingButtonScale = 0.7,
+    FloatingButtonScale = 0.45,
     antiFallEnabled = true,
     godEnabled = true,
     antiFlingEnabled = true,
@@ -143,7 +143,7 @@ local function LoadConfig()
             EmoteFlingConfig.godEnabled = config.godEnabled or false
             EmoteFlingConfig.antiFlingEnabled = config.antiFlingEnabled or false
             EmoteFlingConfig.noclipEnabled = config.noclipEnabled or false
-            EmoteFlingConfig.FloatingButtonScale = math.clamp(tonumber(config.FloatingButtonScale) or 1.0, 0.5, 3.0)
+            EmoteFlingConfig.FloatingButtonScale = math.clamp(tonumber(config.FloatingButtonScale) or 0.45, 0.35, 0.85)
              
             if config.ToggleKey then
                 pcall(function() EmoteFlingConfig.ToggleKey = Enum.KeyCode[config.ToggleKey] end)
@@ -387,15 +387,16 @@ VaporLens:SetTheme({
 	NotifBg = Color3.fromRGB(4, 6, 10),
 })
 
--- Compact sizing for Delta, especially on smaller mobile screens.
+-- Extra-compact sizing for Delta mobile.
+-- Keep the window narrow and short on phones; cap dimensions on tablets/PC.
 local camera = workspace.CurrentCamera
-local viewport = camera and camera.ViewportSize or Vector2.new(390, 844)
-local compactWidth = math.clamp(viewport.X - 24, 260, 300)
-local compactHeight = math.clamp(viewport.Y - 120, 360, 440)
+local viewport = camera and camera.ViewportSize or Vector2.new(360, 740)
+local compactWidth = math.clamp(viewport.X - 32, 210, 235)
+local compactHeight = math.clamp(viewport.Y * 0.48, 275, 335)
 
 local uiWindow = VaporLens:CreateWindow({
     Title = "Emote Fling",
-    Subtitle = "Compact Edition",
+    Subtitle = "Mobile Mini",
     Icon = "plane",
     Width = compactWidth,
     Height = compactHeight,
@@ -539,9 +540,9 @@ local function createFloatingButtons()
     if #floatingButtons > 0 then return end
 
     local scale = EmoteFlingConfig.FloatingButtonScale
-    local BTN_SZ = math.max(44, math.floor(48 * scale))
-    local GAP = math.floor(8 * scale)
-    local PAD = math.floor(80 * scale)
+    local BTN_SZ = math.max(28, math.floor(36 * scale))
+    local GAP = math.max(3, math.floor(5 * scale))
+    local PAD = math.max(42, math.floor(56 * scale))
 
     local buttonInfos = {}
 
@@ -611,12 +612,12 @@ flingTab:CreateToggle({
 
 flingTab:CreateSlider({
     Name = "Floating Button Scale",
-    Range = {0.5, 3.0},
-    Increment = 0.1,
+    Range = {0.35, 0.85},
+    Increment = 0.05,
     CurrentValue = EmoteFlingConfig.FloatingButtonScale,
     Flag = "FloatingButtonScale",
     Callback = function(value)
-        EmoteFlingConfig.FloatingButtonScale = math.clamp(value, 0.5, 3.0)
+        EmoteFlingConfig.FloatingButtonScale = math.clamp(value, 0.35, 0.85)
         SaveConfig()
         if EmoteFlingConfig.FloatingButtonsEnabled then
             destroyFloatingButtons()
