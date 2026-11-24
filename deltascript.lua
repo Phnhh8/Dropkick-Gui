@@ -36,7 +36,7 @@ local EmoteFlingConfig = {
     QuickFireKey = Enum.KeyCode.T,
     NotificationsEnabled = true,
     FloatingButtonsEnabled = true,
-    FloatingButtonScale = 0.45,
+    FloatingButtonScale = 0.20,
     antiFallEnabled = true,
     godEnabled = true,
     antiFlingEnabled = true,
@@ -143,7 +143,7 @@ local function LoadConfig()
             EmoteFlingConfig.godEnabled = config.godEnabled or false
             EmoteFlingConfig.antiFlingEnabled = config.antiFlingEnabled or false
             EmoteFlingConfig.noclipEnabled = config.noclipEnabled or false
-            EmoteFlingConfig.FloatingButtonScale = math.clamp(tonumber(config.FloatingButtonScale) or 0.45, 0.35, 0.85)
+            EmoteFlingConfig.FloatingButtonScale = math.clamp(tonumber(config.FloatingButtonScale) or 0.20, 0.15, 0.60)
              
             if config.ToggleKey then
                 pcall(function() EmoteFlingConfig.ToggleKey = Enum.KeyCode[config.ToggleKey] end)
@@ -540,9 +540,9 @@ local function createFloatingButtons()
     if #floatingButtons > 0 then return end
 
     local scale = EmoteFlingConfig.FloatingButtonScale
-    local BTN_SZ = math.max(28, math.floor(36 * scale))
-    local GAP = math.max(3, math.floor(5 * scale))
-    local PAD = math.max(42, math.floor(56 * scale))
+    local BTN_SZ = math.max(18, math.floor(28 * scale))
+    local GAP = math.max(2, math.floor(4 * scale))
+    local PAD = math.max(24, math.floor(40 * scale))
 
     local buttonInfos = {}
 
@@ -586,8 +586,32 @@ local function createFloatingButtons()
             local instance = fab.Instance
             if not instance or not instance.Parent then return end
             local width = instance.AbsoluteSize.X
-            local yOffset = PAD + (i - 1) * (BTN_SZ + GAP)
-            fab:SetPosition(UDim2.new(1, -PAD - width, 0, yOffset))
+            local height = instance.AbsoluteSize.Y
+            -- Vapor may enforce a larger default button size; shrink the actual
+            -- rendered button and its text/icons for phone-sized screens.
+            local visualScale = 0.62
+            pcall(function()
+                instance.Size = UDim2.fromOffset(
+                    math.max(76, math.floor(width * visualScale)),
+                    math.max(22, math.floor(height * visualScale))
+                )
+            end)
+            for _, child in ipairs(instance:GetDescendants()) do
+                if child:IsA("TextLabel") or child:IsA("TextButton") then
+                    pcall(function()
+                        child.TextSize = math.max(8, math.floor(child.TextSize * 0.78))
+                    end)
+                elseif child:IsA("ImageLabel") or child:IsA("ImageButton") then
+                    pcall(function()
+                        child.Size = UDim2.new(
+                            child.Size.X.Scale * 0.78, math.floor(child.Size.X.Offset * 0.78),
+                            child.Size.Y.Scale * 0.78, math.floor(child.Size.Y.Offset * 0.78)
+                        )
+                    end)
+                end
+            end
+            local yOffset = PAD + (i - 1) * (math.max(22, math.floor(height * visualScale)) + GAP)
+            fab:SetPosition(UDim2.new(1, -PAD - math.max(76, math.floor(width * visualScale)), 0, yOffset))
         end)
 
         table.insert(floatingButtons, fab)
@@ -612,12 +636,12 @@ flingTab:CreateToggle({
 
 flingTab:CreateSlider({
     Name = "Floating Button Scale",
-    Range = {0.35, 0.85},
+    Range = {0.15, 0.60},
     Increment = 0.05,
     CurrentValue = EmoteFlingConfig.FloatingButtonScale,
     Flag = "FloatingButtonScale",
     Callback = function(value)
-        EmoteFlingConfig.FloatingButtonScale = math.clamp(value, 0.35, 0.85)
+        EmoteFlingConfig.FloatingButtonScale = math.clamp(value, 0.15, 0.60)
         SaveConfig()
         if EmoteFlingConfig.FloatingButtonsEnabled then
             destroyFloatingButtons()
