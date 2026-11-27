@@ -21,6 +21,8 @@ local UserInputService = game:GetService("UserInputService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local LocalPlayer = Players.LocalPlayer
 
+local SCRIPT_VERSION = "2.0"
+
 local ModuleState = _G.ModuleState or { EmoteFlingActive = false, TurboFlingActive = false }
 _G.ModuleState = ModuleState
 
@@ -32,22 +34,23 @@ local EmoteFlingConfig = {
     Resolving = false,
     UseCustomId = false,
     CustomId = "",
-    CustomButtonName = "Custom Animation",
     ToggleKey = Enum.KeyCode.X,
     QuickFireKey = Enum.KeyCode.T,
     NotificationsEnabled = true,
     FloatingButtonsEnabled = true,
-    FloatingButtonScale = 0.20,
+    FloatingButtonScale = 0.5,
     antiFallEnabled = true,
     godEnabled = true,
     antiFlingEnabled = true,
     noclipEnabled = true,
+    AutoStopOnDeath = true,
 }
 
 local EmoteFlingTrack = nil
 local lastFireTime = 0
 local FIRE_COOLDOWN = 1
 local UI_Loaded = false
+local SavedSafeSpotCFrame = nil
 
 local PresetAnimations = {
     ["Dropkick"] = "133566007754001",
@@ -58,10 +61,9 @@ local PresetAnimations = {
     ["Slap2"] = "78221709455150",
     ["Push"] = "135890160317037",
     ["Push2"] = "82070755455634",
-
 }
 
-local PresetNames = { "Dropkick", "Dropkicking [TRENDY]", "Tenna Kick","MMA Kick", "Slap", "Slap2", "Push", "Push2" }
+local PresetNames = { "Dropkick", "Dropkicking [TRENDY]", "Tenna Kick", "MMA Kick", "Slap", "Slap2", "Push", "Push2" }
 local CONFIG_FILE = "emote_fling_aura.json"
 
 -- Global Connection Tracker to prevent memory leaks
@@ -97,7 +99,6 @@ local function SaveConfig()
         Speed = EmoteFlingConfig.Speed,
         UseCustomId = EmoteFlingConfig.UseCustomId,
         CustomId = EmoteFlingConfig.CustomId,
-        CustomButtonName = EmoteFlingConfig.CustomButtonName,
         NotificationsEnabled = EmoteFlingConfig.NotificationsEnabled,
         FloatingButtonsEnabled = EmoteFlingConfig.FloatingButtonsEnabled,
         FloatingButtonScale = EmoteFlingConfig.FloatingButtonScale,
@@ -105,7 +106,8 @@ local function SaveConfig()
         godEnabled = EmoteFlingConfig.godEnabled,
         antiFlingEnabled = EmoteFlingConfig.antiFlingEnabled,
         noclipEnabled = EmoteFlingConfig.noclipEnabled,
-        ToggleKey = (EmoteFlingConfig.ToggleKey and typeof(EmoteFlingConfig.ToggleKey) == "EnumItem") and EmoteFlingConfig.ToggleKey.Name or "K",
+        AutoStopOnDeath = EmoteFlingConfig.AutoStopOnDeath,
+        ToggleKey = (EmoteFlingConfig.ToggleKey and typeof(EmoteFlingConfig.ToggleKey) == "EnumItem") and EmoteFlingConfig.ToggleKey.Name or "X",
         QuickFireKey = (EmoteFlingConfig.QuickFireKey and typeof(EmoteFlingConfig.QuickFireKey) == "EnumItem") and EmoteFlingConfig.QuickFireKey.Name or nil,
     }
 
@@ -139,26 +141,26 @@ local function LoadConfig()
             EmoteFlingConfig.Speed = config.Speed or 16
             EmoteFlingConfig.UseCustomId = config.UseCustomId or false
             EmoteFlingConfig.CustomId = config.CustomId or ""
-            EmoteFlingConfig.CustomButtonName = tostring(config.CustomButtonName or "Custom Animation")
             EmoteFlingConfig.NotificationsEnabled = config.NotificationsEnabled ~= false
             EmoteFlingConfig.FloatingButtonsEnabled = config.FloatingButtonsEnabled or false
             EmoteFlingConfig.antiFallEnabled = config.antiFallEnabled or false
             EmoteFlingConfig.godEnabled = config.godEnabled or false
             EmoteFlingConfig.antiFlingEnabled = config.antiFlingEnabled or false
             EmoteFlingConfig.noclipEnabled = config.noclipEnabled or false
-            EmoteFlingConfig.FloatingButtonScale = math.clamp(tonumber(config.FloatingButtonScale) or 0.20, 0.15, 0.60)
-             
+            EmoteFlingConfig.AutoStopOnDeath = config.AutoStopOnDeath ~= false
+            EmoteFlingConfig.FloatingButtonScale = math.clamp(tonumber(config.FloatingButtonScale) or 0.5, 0.4, 2.0)
+
             if config.ToggleKey then
                 pcall(function() EmoteFlingConfig.ToggleKey = Enum.KeyCode[config.ToggleKey] end)
             end
             if config.QuickFireKey then
                 pcall(function() EmoteFlingConfig.QuickFireKey = Enum.KeyCode[config.QuickFireKey] end)
             end
-            
+
             return true
         end
     end
-    
+
     SaveConfig()
     return false
 end
@@ -183,11 +185,11 @@ local function ResolveAnimationId(rawId)
     if not numStr then return nil end
 
     local numId = tonumber(numStr)
-    
+
     local ok, info = pcall(function() return MarketplaceService:GetProductInfo(numId) end)
     if ok and info then
         if info.AssetTypeId ~= 24 and info.AssetTypeId ~= 61 then
-            return nil 
+            return nil
         end
     end
 
@@ -206,8 +208,49 @@ local function ResolveAnimationId(rawId)
 end
 
 -- ============================================================================
--- CLEANUP
+-- CLEANUP & UTILITY HELPERS
 -- ============================================================================
+local function ResetCharacterPhysics()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    hrp.Velocity = Vector3.zero
+    hrp.RotVelocity = Vector3.zero
+    return true
+end
+
+local function SaveSafeSpot()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        Notify({ Title = "Safe Spot", Content = "Không tìm thấy nhân vật.", Duration = 2, Icon = "alert-circle" })
+        return
+    end
+    SavedSafeSpotCFrame = hrp.CFrame
+    Notify({ Title = "Safe Spot", Content = "Đã lưu vị trí an toàn.", Duration = 2, Icon = "map-pin" })
+end
+
+local function TeleportToSafeSpot()
+    if not SavedSafeSpotCFrame then
+        Notify({ Title = "Safe Spot", Content = "Chưa lưu vị trí an toàn nào.", Duration = 2, Icon = "alert-circle" })
+        return
+    end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        Notify({ Title = "Safe Spot", Content = "Không tìm thấy nhân vật.", Duration = 2, Icon = "alert-circle" })
+        return
+    end
+
+    ResetCharacterPhysics()
+    hrp.CFrame = SavedSafeSpotCFrame
+    Notify({ Title = "Safe Spot", Content = "Đã quay về vị trí an toàn.", Duration = 2, Icon = "navigation" })
+end
+
 local function EmoteFlingCleanup()
     EmoteFlingConfig.Active = false
     ModuleState.EmoteFlingActive = false
@@ -217,16 +260,7 @@ local function EmoteFlingCleanup()
         EmoteFlingTrack = nil
     end
 
-    local char = LocalPlayer.Character
-    if char then
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-            hrp.Velocity = Vector3.zero
-            hrp.RotVelocity = Vector3.zero
-        end
-    end
+    ResetCharacterPhysics()
 end
 
 -- ============================================================================
@@ -243,7 +277,7 @@ local function FireEmoteFling()
     end
 
     if EmoteFlingConfig.Active then
-        EmoteFlingConfig.Active = false 
+        EmoteFlingConfig.Active = false
         return
     end
 
@@ -312,12 +346,12 @@ local function FireEmoteFling()
         Notify({ Title = "Emote Fling", Content = "Active! Press Fling Keybind or execute again to STOP.", Duration = 2, Icon = "zap" })
 
         local flip = 1
-        local timeout = tick() + 300 
+        local timeout = tick() + 300
 
         -- Big O: O(1) constant time execution per engine frame
         while EmoteFlingConfig.Active and not animStopped do
             if tick() > timeout then break end
-            
+
             RunService.Heartbeat:Wait()
 
             local c = LocalPlayer.Character
@@ -325,6 +359,10 @@ local function FireEmoteFling()
             local h = c and c:FindFirstChildWhichIsA("Humanoid")
 
             if r and h then
+                if EmoteFlingConfig.AutoStopOnDeath and h.Health <= 0 then
+                    break
+                end
+
                 local dir = h.MoveDirection
                 flip = flip * -1
                 r.AssemblyLinearVelocity = Vector3.new(100000 * flip, 0, 100000 * flip)
@@ -358,48 +396,47 @@ end
 -- UI
 -- ============================================================================
 VaporLens:SetTheme({
-	-- Window
-	Glass = Color3.fromRGB(8, 12, 20),
-	GlassTransp = 0.35,
-	Border = Color3.fromRGB(25, 40, 65),
-	BorderTransp = 0.45,
+    -- Window
+    Glass = Color3.fromRGB(8, 12, 20),
+    GlassTransp = 0.35,
+    Border = Color3.fromRGB(25, 40, 65),
+    BorderTransp = 0.45,
 
-	-- Accent
-	Glow = Color3.fromRGB(0, 130, 255),
+    -- Accent
+    Glow = Color3.fromRGB(0, 130, 255),
 
-	-- Text
-	Primary = Color3.fromRGB(235, 245, 255),
-	Secondary = Color3.fromRGB(145, 165, 185),
-	SecTransp = 0,
+    -- Text
+    Primary = Color3.fromRGB(235, 245, 255),
+    Secondary = Color3.fromRGB(145, 165, 185),
+    SecTransp = 0,
 
-	-- Elements
-	ElemBg = Color3.fromRGB(15, 22, 35),
-	ElemTransp = 0.50,
-	ElemHoverTransp = 0.25,
-	ElemBdrTransp = 0.70,
+    -- Elements
+    ElemBg = Color3.fromRGB(15, 22, 35),
+    ElemTransp = 0.50,
+    ElemHoverTransp = 0.25,
+    ElemBdrTransp = 0.70,
 
-	-- Controls
-	ToggleOff = Color3.fromRGB(25, 35, 50),
-	SliderTrack = Color3.fromRGB(10, 15, 25),
-	InputBg = Color3.fromRGB(6, 8, 14),
+    -- Controls
+    ToggleOff = Color3.fromRGB(25, 35, 50),
+    SliderTrack = Color3.fromRGB(10, 15, 25),
+    InputBg = Color3.fromRGB(6, 8, 14),
 
-	-- Section label
-	SectionTransp = 0.35,
+    -- Section label
+    SectionTransp = 0.35,
 
-	-- Notification
-	NotifBg = Color3.fromRGB(4, 6, 10),
+    -- Notification
+    NotifBg = Color3.fromRGB(4, 6, 10),
 })
 
--- Extra-compact sizing for Delta mobile.
--- Keep the window narrow and short on phones; cap dimensions on tablets/PC.
+-- Compact sizing for Delta, especially on smaller mobile screens.
 local camera = workspace.CurrentCamera
-local viewport = camera and camera.ViewportSize or Vector2.new(360, 740)
-local compactWidth = math.clamp(viewport.X - 32, 210, 235)
-local compactHeight = math.clamp(viewport.Y * 0.48, 275, 335)
+local viewport = camera and camera.ViewportSize or Vector2.new(390, 844)
+local compactWidth = math.clamp(viewport.X - 24, 240, 285)
+local compactHeight = math.clamp(viewport.Y - 120, 320, 410)
 
 local uiWindow = VaporLens:CreateWindow({
     Title = "Emote Fling",
-    Subtitle = "Mobile Mini",
+    Subtitle = "Compact Edition v" .. SCRIPT_VERSION,
     Icon = "plane",
     Width = compactWidth,
     Height = compactHeight,
@@ -416,7 +453,7 @@ flingTab:CreateToggle({
     Callback = function(state)
         EmoteFlingConfig.Armed = state
         if not state and EmoteFlingConfig.Active then
-            EmoteFlingConfig.Active = false 
+            EmoteFlingConfig.Active = false
         end
         SaveConfig()
     end,
@@ -441,7 +478,7 @@ flingTab:CreateToggle({
         if state then
             EmoteFlingConfig.AnimId = EmoteFlingConfig.CustomId or ""
         else
-            EmoteFlingConfig.AnimId = PresetAnimations["Dropkick"] or "133566007754001" 
+            EmoteFlingConfig.AnimId = PresetAnimations["Dropkick"] or "133566007754001"
         end
         SaveConfig()
     end,
@@ -489,8 +526,8 @@ flingTab:CreateKeybind({
 
 local flingInputConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-    if input.KeyCode == Enum.KeyCode.Unknown then return end 
-    
+    if input.KeyCode == Enum.KeyCode.Unknown then return end
+
     if EmoteFlingConfig.QuickFireKey and input.KeyCode == EmoteFlingConfig.QuickFireKey then
         FireEmoteFling()
     end
@@ -516,7 +553,7 @@ uiWindow:CreateToggleKeybind(flingTab, {
 })
 
 -- ============================================================================
--- SUPPLEMENT: SHOW FLOATING BUTTONS TOGGLE & FLOATING BUTTONS
+-- SUPPLEMENT: SHOW FLOATING BUTTONS TOGGLE & FLOATING BUTTONS (MOBILE COMPACT)
 -- ============================================================================
 local floatingButtons = {}
 
@@ -542,10 +579,10 @@ end
 local function createFloatingButtons()
     if #floatingButtons > 0 then return end
 
-    local scale = EmoteFlingConfig.FloatingButtonScale
-    local BTN_SZ = math.max(18, math.floor(28 * scale))
-    local GAP = math.max(2, math.floor(4 * scale))
-    local PAD = math.max(24, math.floor(40 * scale))
+    local scale = math.clamp(tonumber(EmoteFlingConfig.FloatingButtonScale) or 0.5, 0.4, 2.0)
+    local BTN_SZ = math.max(28, math.floor(38 * scale))
+    local GAP = math.max(3, math.floor(6 * scale))
+    local PAD = math.max(12, math.floor(24 * scale))
 
     local buttonInfos = {}
 
@@ -555,10 +592,7 @@ local function createFloatingButtons()
             id = PresetAnimations[presetName]
         })
     end
-    local customButtonLabel = tostring(EmoteFlingConfig.CustomButtonName or "Custom Animation")
-    customButtonLabel = customButtonLabel:sub(1, 24)
-    if customButtonLabel:match("^%s*$") then customButtonLabel = "Custom Animation" end
-    table.insert(buttonInfos, { Text = customButtonLabel, id = nil })
+    table.insert(buttonInfos, { Text = "Custom animID", id = nil })
 
     for i, info in ipairs(buttonInfos) do
         local clickHandler
@@ -579,7 +613,7 @@ local function createFloatingButtons()
             Text = info.Text,
             Icon = "hand-metal",
             Size = BTN_SZ,
-            Position = UDim2.new(1, -150, 0, 0),
+            Position = UDim2.new(1, -110, 0, 0),
             ClickCallback = clickHandler,
             DragEnabled = true,
             DragThreshold = 4,
@@ -591,33 +625,19 @@ local function createFloatingButtons()
         task.defer(function()
             local instance = fab.Instance
             if not instance or not instance.Parent then return end
-            local width = instance.AbsoluteSize.X
-            local height = instance.AbsoluteSize.Y
-            -- Vapor may enforce a larger default button size; shrink the actual
-            -- rendered button and its text/icons for phone-sized screens.
-            local visualScale = 0.62
-            pcall(function()
-                instance.Size = UDim2.fromOffset(
-                    math.max(76, math.floor(width * visualScale)),
-                    math.max(22, math.floor(height * visualScale))
-                )
-            end)
-            for _, child in ipairs(instance:GetDescendants()) do
-                if child:IsA("TextLabel") or child:IsA("TextButton") then
-                    pcall(function()
-                        child.TextSize = math.max(8, math.floor(child.TextSize * 0.78))
-                    end)
-                elseif child:IsA("ImageLabel") or child:IsA("ImageButton") then
-                    pcall(function()
-                        child.Size = UDim2.new(
-                            child.Size.X.Scale * 0.78, math.floor(child.Size.X.Offset * 0.78),
-                            child.Size.Y.Scale * 0.78, math.floor(child.Size.Y.Offset * 0.78)
-                        )
-                    end)
-                end
+
+            local uiScale = instance:FindFirstChildOfClass("UIScale")
+            if not uiScale then
+                uiScale = Instance.new("UIScale")
+                uiScale.Parent = instance
             end
-            local yOffset = PAD + (i - 1) * (math.max(22, math.floor(height * visualScale)) + GAP)
-            fab:SetPosition(UDim2.new(1, -PAD - math.max(76, math.floor(width * visualScale)), 0, yOffset))
+            uiScale.Scale = math.clamp(scale * 1.35, 0.55, 1.3)
+
+            local width = instance.AbsoluteSize.X * uiScale.Scale
+            local height = instance.AbsoluteSize.Y * uiScale.Scale
+            local stepY = math.max(BTN_SZ + GAP, height + GAP)
+            local yOffset = PAD + (i - 1) * stepY
+            fab:SetPosition(UDim2.new(1, -PAD - width, 0, yOffset))
         end)
 
         table.insert(floatingButtons, fab)
@@ -642,12 +662,12 @@ flingTab:CreateToggle({
 
 flingTab:CreateSlider({
     Name = "Floating Button Scale",
-    Range = {0.15, 0.60},
-    Increment = 0.05,
+    Range = {0.4, 2.0},
+    Increment = 0.1,
     CurrentValue = EmoteFlingConfig.FloatingButtonScale,
     Flag = "FloatingButtonScale",
     Callback = function(value)
-        EmoteFlingConfig.FloatingButtonScale = math.clamp(value, 0.15, 0.60)
+        EmoteFlingConfig.FloatingButtonScale = math.clamp(value, 0.4, 2.0)
         SaveConfig()
         if EmoteFlingConfig.FloatingButtonsEnabled then
             destroyFloatingButtons()
@@ -656,17 +676,41 @@ flingTab:CreateSlider({
     end,
 })
 
-flingTab:CreateInput({
-    Name = "Custom Button Name",
-    PlaceholderText = "Name shown on the custom ID button",
-    CurrentValue = EmoteFlingConfig.CustomButtonName,
-    Callback = function(value)
-        local cleaned = tostring(value or ""):gsub("[%c]", ""):sub(1, 24)
-        EmoteFlingConfig.CustomButtonName = cleaned ~= "" and cleaned or "Custom Animation"
+-- ============================================================================
+-- SECTION: EXTRA UTILITIES (SAFE SPOT & PHYSICS)
+-- ============================================================================
+flingTab:CreateSection("Extra Utilities")
+
+flingTab:CreateToggle({
+    Name = "Auto Stop Fling On Death",
+    CurrentValue = EmoteFlingConfig.AutoStopOnDeath,
+    Callback = function(state)
+        EmoteFlingConfig.AutoStopOnDeath = state
         SaveConfig()
-        if EmoteFlingConfig.FloatingButtonsEnabled then
-            destroyFloatingButtons()
-            createFloatingButtons()
+    end,
+})
+
+flingTab:CreateButton({
+    Name = "Save Safe Spot",
+    Callback = function()
+        SaveSafeSpot()
+    end,
+})
+
+flingTab:CreateButton({
+    Name = "Teleport To Safe Spot",
+    Callback = function()
+        TeleportToSafeSpot()
+    end,
+})
+
+flingTab:CreateButton({
+    Name = "Reset Character Physics",
+    Callback = function()
+        if ResetCharacterPhysics() then
+            Notify({ Title = "Physics", Content = "Đã reset vận tốc nhân vật.", Duration = 2, Icon = "refresh-cw" })
+        else
+            Notify({ Title = "Physics", Content = "Không tìm thấy HumanoidRootPart.", Duration = 2, Icon = "alert-circle" })
         end
     end,
 })
@@ -678,37 +722,26 @@ flingTab:CreateSection("Godmode & Anti-Fall")
 
 local function HookAntiFall(char)
     task.spawn(function()
-        local root = char:WaitForChild("HumanoidRootPart", 10)
-        local humanoid = char:WaitForChild("Humanoid", 10)
-        if not root or not humanoid or not EmoteFlingConfig.antiFallEnabled then return end
+        local r = char:WaitForChild("HumanoidRootPart", 10)
+        if r and EmoteFlingConfig.antiFallEnabled then
+            local rs = game:GetService("RunService")
+            local hb = rs.Heartbeat
+            local rsd = rs.RenderStepped
+            local z = Vector3.zero
 
-        DisconnectConnection("antiFallLoopConn")
-        local rayParams = RaycastParams.new()
-        rayParams.FilterType = Enum.RaycastFilterType.Exclude
-        rayParams.FilterDescendantsInstances = { char }
-        rayParams.IgnoreWater = true
-
-        local lastCheck = 0
-        local conn = RunService.Heartbeat:Connect(function()
-            if not EmoteFlingConfig.antiFallEnabled or not char.Parent or not root.Parent or humanoid.Health <= 0 then
-                DisconnectConnection("antiFallLoopConn")
-                return
-            end
-
-            -- Only soften a dangerous landing close to the ground. Do not freeze
-            -- velocity every frame: that causes jitter and breaks normal movement.
-            if humanoid.FloorMaterial == Enum.Material.Air and not humanoid.SeatPart then
-                local velocity = root.AssemblyLinearVelocity
-                if velocity.Y < -75 and os.clock() - lastCheck >= 0.08 then
-                    lastCheck = os.clock()
-                    local hit = workspace:Raycast(root.Position, Vector3.new(0, -14, 0), rayParams)
-                    if hit and (root.Position - hit.Position).Magnitude <= 12 then
-                        root.AssemblyLinearVelocity = Vector3.new(velocity.X, -62, velocity.Z)
-                    end
+            DisconnectConnection("antiFallLoopConn")
+            local conn = hb:Connect(function()
+                if not EmoteFlingConfig.antiFallEnabled or not r.Parent then
+                    DisconnectConnection("antiFallLoopConn")
+                    return
                 end
-            end
-        end)
-        RegisterConnection("antiFallLoopConn", conn)
+                local v = r.AssemblyLinearVelocity
+                r.AssemblyLinearVelocity = z
+                rsd:Wait()
+                r.AssemblyLinearVelocity = v
+            end)
+            RegisterConnection("antiFallLoopConn", conn)
+        end
     end)
 end
 
@@ -828,8 +861,6 @@ flingTab:CreateSection("Anti-Fling")
 
 local lastSafeCFrameFling = nil
 local lastNotifyTimeFling = 0
-local lastSafeSaveTimeFling = 0
-local flingStrikeCount = 0
 local isRecoveringFling = false
 
 local function OnAntiFlingToggle(Value, isInitialization)
@@ -837,105 +868,95 @@ local function OnAntiFlingToggle(Value, isInitialization)
 
     if EmoteFlingConfig.antiFlingEnabled then
         local char = LocalPlayer.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChildWhichIsA("Humanoid")
-        if root and hum and hum.FloorMaterial ~= Enum.Material.Air then
-            lastSafeCFrameFling = root.CFrame
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            lastSafeCFrameFling = char.HumanoidRootPart.CFrame
         end
 
-        flingStrikeCount = 0
-        isRecoveringFling = false
         DisconnectConnection("antiFlingLoopConn")
-        DisconnectConnection("antiFlingRespawnConn")
 
-        local function captureCharacter(newChar)
-            task.spawn(function()
-                local newRoot = newChar:WaitForChild("HumanoidRootPart", 10)
-                local newHum = newChar:WaitForChild("Humanoid", 10)
-                if newRoot and newHum and EmoteFlingConfig.antiFlingEnabled then
-                    lastSafeCFrameFling = newRoot.CFrame
-                    flingStrikeCount = 0
-                    isRecoveringFling = false
-                end
-            end)
-        end
-
-        local respawnConn = LocalPlayer.CharacterAdded:Connect(captureCharacter)
-        RegisterConnection("antiFlingRespawnConn", respawnConn)
-
-        local conn = RunService.Heartbeat:Connect(function()
+        -- Big O: O(1) mathematical vector magnitude evaluations
+        local conn = RunService.Stepped:Connect(function(_, dt)
             if not EmoteFlingConfig.antiFlingEnabled then return end
-            local currentChar = LocalPlayer.Character
-            local hrp = currentChar and currentChar:FindFirstChild("HumanoidRootPart")
-            local humanoid = currentChar and currentChar:FindFirstChildWhichIsA("Humanoid")
-            if not hrp or not humanoid or humanoid.Health <= 0 then return end
 
-            local velocity = hrp.AssemblyLinearVelocity
-            local angular = hrp.AssemblyAngularVelocity
-            local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
-            local seated = humanoid.SeatPart ~= nil
-            local now = os.clock()
+            char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local humanoid = char and char:FindFirstChild("Humanoid")
 
-            -- Save only stable, grounded positions; never overwrite the checkpoint
-            -- while falling, seated, or already being thrown by another assembly.
-            if grounded and not seated and velocity.Magnitude < 85 and angular.Magnitude < 65
-                and now - lastSafeSaveTimeFling >= 0.20 then
-                lastSafeCFrameFling = hrp.CFrame
-                lastSafeSaveTimeFling = now
-                isRecoveringFling = false
-                flingStrikeCount = 0
-            end
+            if hrp and humanoid and humanoid.Health > 0 then
+                local velocity = hrp.AssemblyLinearVelocity
+                local rotVelocity = hrp.AssemblyAngularVelocity
+                local mag = velocity.Magnitude
+                local rotMag = rotVelocity.Magnitude
 
-            if seated then return end
+                if not lastSafeCFrameFling then lastSafeCFrameFling = hrp.CFrame end
 
-            local abnormalImpulse = velocity.Magnitude > 185
-                or angular.Magnitude > 115
-                or velocity.Y > 145
-                or velocity.Y < -190
+                local isControlledMotion = rotMag < 60
+                local currentState = humanoid:GetState()
+                local isFalling = velocity.Y < -50 and (currentState == Enum.HumanoidStateType.Freefall or currentState == Enum.HumanoidStateType.FallingDown)
 
-            if abnormalImpulse then
-                flingStrikeCount += 1
-            else
-                flingStrikeCount = math.max(0, flingStrikeCount - 1)
-            end
+                local maxLinear = EmoteFlingConfig.Active and 250 or 150
+                local maxVerticalUp = 250
+                local maxVerticalDown = -350
 
-            -- Require repeated abnormal samples to avoid false positives from jumps.
-            if flingStrikeCount >= 2 and not isRecoveringFling then
-                isRecoveringFling = true
-                hrp.AssemblyLinearVelocity = Vector3.zero
-                hrp.AssemblyAngularVelocity = Vector3.zero
-
-                if lastSafeCFrameFling and (hrp.Position - lastSafeCFrameFling.Position).Magnitude < 160 then
-                    currentChar:PivotTo(lastSafeCFrameFling * CFrame.new(0, 2.5, 0))
+                if isControlledMotion then
+                    maxLinear = 1000
+                    maxVerticalUp = 800
+                    if isFalling then
+                        maxVerticalDown = -5000
+                    else
+                        maxVerticalDown = -800
+                    end
                 end
 
-                pcall(function()
-                    humanoid.PlatformStand = false
-                    humanoid.Sit = false
-                    humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-                end)
+                local isFlinged = rotMag > 120
+                               or velocity.Y > maxVerticalUp
+                               or velocity.Y < maxVerticalDown
+                               or mag > maxLinear
 
-                flingStrikeCount = 0
-                if now - lastNotifyTimeFling > 2 then
-                    Notify({ Title = "Anti-Fling", Content = "Strong external physics impulse detected; recovery applied.", Duration = 2, Icon = "shield-check" })
-                    lastNotifyTimeFling = now
+                if isFlinged then
+                    isRecoveringFling = true
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+
+                    if lastSafeCFrameFling then
+                        hrp.CFrame = lastSafeCFrameFling
+                    end
+
+                    if currentState == Enum.HumanoidStateType.Physics or currentState == Enum.HumanoidStateType.Ragdoll or currentState == Enum.HumanoidStateType.FallingDown then
+                        humanoid:ChangeState(Enum.HumanoidStateType.Running)
+                        humanoid.PlatformStand = false
+                        humanoid.Sit = false
+                    end
+
+                    if tick() - lastNotifyTimeFling > 2.0 then
+                        Notify({Title = "Anti-Fling", Content = "Anomalia cinética suprimida.", Duration = 1.5, Icon = "shield"})
+                        lastNotifyTimeFling = tick()
+                    end
+                else
+                    local distance = (hrp.Position - lastSafeCFrameFling.Position).Magnitude
+
+                    if distance > 50 and mag < 100 and not isRecoveringFling then
+                        lastSafeCFrameFling = hrp.CFrame
+                    end
+
+                    if isControlledMotion and mag < 900 then
+                        lastSafeCFrameFling = hrp.CFrame
+                        isRecoveringFling = false
+                    end
                 end
-                task.delay(0.35, function() isRecoveringFling = false end)
             end
         end)
         RegisterConnection("antiFlingLoopConn", conn)
 
         if not isInitialization then
-            Notify({ Title = "Anti-Fling", Content = "Enhanced protection enabled.", Duration = 2.5, Icon = "shield-check" })
+            Notify({Title = "Anti-Fling", Content = "Proteção Absoluta e Fly Bypass sincronizados.", Duration = 2.5, Icon = "check-circle"})
         end
     else
         DisconnectConnection("antiFlingLoopConn")
-        DisconnectConnection("antiFlingRespawnConn")
         lastSafeCFrameFling = nil
-        flingStrikeCount = 0
         isRecoveringFling = false
         if not isInitialization then
-            Notify({ Title = "Anti-Fling", Content = "Disabled.", Duration = 2.5, Icon = "shield-off" })
+            Notify({Title = "Anti-Fling", Content = "Desativado.", Duration = 2.5, Icon = "x-circle"})
         end
     end
     SaveConfig()
@@ -961,10 +982,10 @@ local function HookNoClip(char)
     DisconnectConnection("noclipLoopConn")
     DisconnectConnection("noclipAddedConn")
     if not EmoteFlingConfig.noclipEnabled then return end
-    
+
     local parts = {}
     for k in pairs(NoClipStates) do NoClipStates[k] = nil end
-    
+
     local function registerPart(part)
         if part:IsA("BasePart") then
             table.insert(parts, part)
@@ -981,7 +1002,7 @@ local function HookNoClip(char)
 
     local addedConn = char.DescendantAdded:Connect(registerPart)
     RegisterConnection("noclipAddedConn", addedConn)
-    
+
     local conn = RunService.Stepped:Connect(function()
         if not EmoteFlingConfig.noclipEnabled or not char.Parent then
             DisconnectConnection("noclipLoopConn")
@@ -1019,7 +1040,7 @@ local function OnNoClipToggle(Value, isInitialization)
         DisconnectConnection("noclipLoopConn")
         DisconnectConnection("noclipRespawnConn")
         DisconnectConnection("noclipAddedConn")
-        
+
         if LocalPlayer.Character then RestoreNoClip(LocalPlayer.Character) end
 
         if not isInitialization then
@@ -1033,6 +1054,63 @@ noclipToggle = flingTab:CreateToggle({
     Name = "NoClip",
     CurrentValue = EmoteFlingConfig.noclipEnabled,
     Callback = function(Value) OnNoClipToggle(Value, not UI_Loaded) end,
+})
+
+-- ============================================================================
+-- UI UPDATE LOG 2.0 TAB
+-- ============================================================================
+local updateLogTab = uiWindow:CreateTab({ Title = "Update Log 2.0", Icon = "file-text" })
+
+updateLogTab:CreateSection("Version 2.0 Highlights")
+
+updateLogTab:CreateButton({
+    Name = "v2.0: Added Safe Spot & Teleport",
+    Callback = function()
+        Notify({
+            Title = "Update Log 2.0",
+            Content = "Lưu và dịch chuyển về vị trí an toàn trong tab Emote Fling.",
+            Duration = 3,
+            Icon = "map-pin"
+        })
+    end,
+})
+
+updateLogTab:CreateButton({
+    Name = "v2.0: Reset Physics & Auto-Stop",
+    Callback = function()
+        Notify({
+            Title = "Update Log 2.0",
+            Content = "Thêm Reset Character Physics và tự dừng fling khi nhân vật chết.",
+            Duration = 3,
+            Icon = "refresh-cw"
+        })
+    end,
+})
+
+updateLogTab:CreateButton({
+    Name = "v2.0: Dropkick & Fling Core Untouched",
+    Callback = function()
+        Notify({
+            Title = "Update Log 2.0",
+            Content = "Giữ nguyên hệ thống Dropkick / Emote Fling và preset có sẵn.",
+            Duration = 3,
+            Icon = "check-circle"
+        })
+    end,
+})
+
+updateLogTab:CreateSection("Previous Changelog")
+
+updateLogTab:CreateButton({
+    Name = "v1.x: Presets, Floating Buttons & Guards",
+    Callback = function()
+        Notify({
+            Title = "Changelog v1.x",
+            Content = "Preset animations, Floating Buttons, Anti-Fall, Godmode, Anti-Fling, NoClip.",
+            Duration = 3,
+            Icon = "info"
+        })
+    end,
 })
 
 -- ============================================================================
@@ -1055,13 +1133,13 @@ _G.EmoteFling_GlobalCleanup = function()
     for name, _ in pairs(EventConnections) do
         DisconnectConnection(name)
     end
-    
+
     pcall(function() destroyFloatingButtons() end)
-    
+
     if EmoteFlingConfig.Active then
         EmoteFlingConfig.Active = false
     end
-    
+
     if uiWindow and type(uiWindow.Destroy) == "function" then
         pcall(function() uiWindow:Destroy() end)
     end
@@ -1101,7 +1179,7 @@ if EmoteFlingConfig.FloatingButtonsEnabled and #floatingButtons == 0 then
 end
 
 if ConfigLoaded then
-    Notify({ Title = "Emote Fling", Content = "Config loaded and synced.", Duration = 2, Icon = "check-circle" })
+    Notify({ Title = "Emote Fling", Content = "Config loaded and synced (v" .. SCRIPT_VERSION .. ").", Duration = 2, Icon = "check-circle" })
 else
-    Notify({ Title = "Emote Fling", Content = "Module loaded (Defaults).", Duration = 3, Icon = "check-circle" })
+    Notify({ Title = "Emote Fling", Content = "Module loaded - v" .. SCRIPT_VERSION .. " (Defaults).", Duration = 3, Icon = "check-circle" })
 end
